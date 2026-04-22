@@ -1,32 +1,80 @@
+# =============================================================================
+# GitHub Actions Workflow: Deploy devops-demo-app to DigitalOcean
+# =============================================================================
+# This file automates what you have been doing manually all semester:
+#   1. Install dependencies (npm install)
+#   2. Run the test suite (npm test)
+#   3. Copy the code to your Droplet (scp)
+#   4. Restart the application on the Droplet (ssh + node)
+#
+# Place this file at:  .github/workflows/deploy.yml
+# =============================================================================
+
 name: Deploy to Droplet
 
+# --- TRIGGER ---
+# This workflow runs every time you push to the 'main' branch.
+# Think of this as the starting event in the feedback loop.
 on:
   push:
     branches: [main]
 
 jobs:
-  deploy:
+  test-and-deploy:
     runs-on: ubuntu-latest
 
     steps:
+      # Step 1: Check out your code from this repository
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # Step 2: Set up Node.js (same runtime your Droplet uses)
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # Step 3: Install dependencies and run the test suite
+      # If ANY test fails, the workflow stops here — nothing gets deployed.
+      # This is the "gate" that protects your production server.
       - name: Install dependencies
         run: npm install
 
       - name: Run tests
         run: npm test
 
-      - name: Deploy to server
+      # Step 4: Copy the application files to your Droplet
+      # Uses the appleboy/scp-action to handle SSH file transfer.
+      # The three secrets (HOST, USERNAME, PASSWORD) come from your
+      # repository's Settings > Secrets and variables > Actions.
+      - name: Copy files to Droplet
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DROPLET_IP }}
+          username: root
+          password: ${{ secrets.DROPLET_PASSWORD }}
+          source: "server.js,package.json,package-lock.json,public/"
+          target: /opt/devops-demo-app
+          overwrite: true
+
+      # Step 5: SSH into the Droplet and restart the application
+      # - Install/update dependencies on the server
+      # - Restart via systemd (no backgrounding tricks needed)
+      - name: Restart application
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets.HOST }}
+          host: ${{ secrets.DROPLET_IP }}
           username: root
-          key: ${{ secrets.SSH_KEY }}
+          password: ${{ secrets.DROPLET_PASSWORD }}
           script: |
-            cd ~/devops-demo-app
-            git pull origin main
-            pkill node || true
-            npm install
-            nohup node server.js > app.log 2>&1 &
+            cd /opt/devops-demo-app
+            npm install --omit=dev
+            systemctl restart devops-demo-app
+
+      # Step 6: Verify the health endpoint from the GitHub runner.
+      # This runs OUTSIDE the SSH session, avoiding the SIGTERM issue.
+      # We give the app a few seconds to fully start before checking.
+      - name: Verify health endpoint
+        run: |
+          sleep 5
+          curl -sf http://${{ secrets.DROPLET_IP }}:3000/health && echo " — Deploy successful!" || (echo " — Health check failed!" && exit 1)
