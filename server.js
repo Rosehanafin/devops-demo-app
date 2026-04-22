@@ -42,3 +42,4 @@ if (require.main === module) {
     console.log(`Server hostname: ${os.hostname()}`);
   });
 }
+
